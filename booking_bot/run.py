@@ -675,6 +675,10 @@ def _settings_for_manual_request(
     )
 
 
+def _settings_for_auto_reauth(settings: Settings, timeout_ms: int) -> Settings:
+    return replace(settings, otp_wait_timeout_ms=max(60_000, int(timeout_ms)))
+
+
 def _menu_keyboard_rows() -> list[list[str]]:
     return [
         [BTN_RUN_NEXT, BTN_STATUS],
@@ -979,6 +983,41 @@ def _scheduled_auth_block_message(
         f"Scheduled run blocked because auth preflight on "
         f"{expected_preflight_date.strftime(settings.booking_date_format)} finished with "
         f"status={status}: {detail}. Send /reauth or tap Re-auth, then run booking manually."
+    )
+
+
+def _preflight_needs_reauth(outcome: PreflightOutcome) -> bool:
+    result = outcome.result
+    if result is None:
+        return False
+    return bool(result.login_required or result.otp_likely)
+
+
+def _auto_reauth_timeout_ms(
+    settings: Settings,
+    now_utc: datetime,
+    next_run_utc: datetime,
+    buffer_before_run_sec: int = 300,
+) -> int:
+    seconds_until_run = int((next_run_utc - now_utc).total_seconds())
+    available_sec = seconds_until_run - max(0, buffer_before_run_sec)
+    if available_sec <= 0:
+        return 0
+    return min(settings.otp_wait_timeout_ms, available_sec * 1000)
+
+
+def _auto_reauth_deadline_message(
+    settings: Settings,
+    now_utc: datetime,
+    next_run_utc: datetime,
+    timeout_ms: int,
+) -> str:
+    deadline_utc = now_utc + timedelta(milliseconds=timeout_ms)
+    return (
+        "[workplace-booking] Auth preflight requires re-auth. "
+        "Starting automatic Re-auth now.\n"
+        f"Reply with OTP before {_format_local_dt(deadline_utc, settings.schedule_local_utc_offset)} "
+        f"to keep the scheduled run at {_format_local_dt(next_run_utc, settings.schedule_local_utc_offset)}."
     )
 
 
@@ -1724,13 +1763,43 @@ async def run_service(settings: Settings, notifier: InteractiveNotifier) -> int:
 
         preflight_due, preflight_local_date = _is_preflight_due(settings, state, now_utc)
         if preflight_due:
-            await _execute_preflight(
+            preflight_outcome = await _execute_preflight(
                 settings,
                 notifier,
                 store,
                 mode="preflight",
                 local_date=preflight_local_date,
             )
+            next_target = _scheduled_target_date_for_run(settings, next_run_utc)
+            if (
+                _preflight_needs_reauth(preflight_outcome)
+                and not _is_weekend_booking_date(settings, next_target)
+            ):
+                reauth_now = utc_now()
+                auto_timeout_ms = _auto_reauth_timeout_ms(settings, reauth_now, next_run_utc)
+                if auto_timeout_ms > 0:
+                    notifier.send(
+                        _auto_reauth_deadline_message(
+                            settings,
+                            reauth_now,
+                            next_run_utc,
+                            auto_timeout_ms,
+                        ),
+                        critical=True,
+                    )
+                    await _execute_reauth(
+                        _settings_for_auto_reauth(settings, auto_timeout_ms),
+                        notifier,
+                        store,
+                        mode="auto_reauth",
+                    )
+                else:
+                    notifier.send(
+                        "[workplace-booking] Auth preflight requires re-auth, "
+                        "but there is not enough time before the scheduled run. "
+                        "Send /reauth or tap Re-auth, then run booking manually.",
+                        critical=True,
+                    )
             continue
 
         if now_utc >= next_run_utc:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 import os
 from pathlib import Path
@@ -10,16 +11,21 @@ from unittest.mock import patch
 from booking_bot.config import Settings
 from booking_bot.run import (
     BTN_REAUTH,
+    PreflightOutcome,
+    _auto_reauth_timeout_ms,
     _build_service_help,
     _build_schedule_preview,
     _compute_catchup_decision,
     _is_healthcheck_due,
     _menu_keyboard_rows,
+    _preflight_needs_reauth,
     _scheduled_auth_block_message,
     _scheduled_preflight_local_date,
     _scheduled_target_date_for_run,
+    _settings_for_auto_reauth,
     _settings_for_manual_request,
 )
+from booking_bot.booking import PreflightResult
 from booking_bot.runtime_state import SchedulerState
 
 
@@ -126,6 +132,34 @@ class RunHelperTests(unittest.TestCase):
         self.assertIsNone(
             _scheduled_auth_block_message(settings, state, date(2026, 4, 29))
         )
+
+    def test_preflight_login_warning_triggers_auto_reauth(self) -> None:
+        outcome = PreflightOutcome(
+            exit_code=0,
+            result=PreflightResult(
+                started_at=datetime(2026, 4, 28, 18, 0, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 4, 28, 18, 1, tzinfo=timezone.utc),
+                session_valid=False,
+                login_required=True,
+                otp_likely=False,
+                office_map_available=False,
+                storage_state_present=True,
+                storage_state_age_sec=3600,
+                current_url="https://example.test/auth",
+                message="Login required.",
+            ),
+        )
+        self.assertTrue(_preflight_needs_reauth(outcome))
+
+    def test_auto_reauth_timeout_stops_before_scheduled_run(self) -> None:
+        settings = replace(self._settings(), otp_wait_timeout_ms=28_800_000)
+        now = datetime(2026, 4, 28, 18, 0, tzinfo=timezone.utc)
+        next_run = datetime(2026, 4, 28, 21, 1, tzinfo=timezone.utc)
+        timeout_ms = _auto_reauth_timeout_ms(settings, now, next_run)
+        self.assertEqual(timeout_ms, 10_560_000)
+
+        reauth_settings = _settings_for_auto_reauth(settings, timeout_ms)
+        self.assertEqual(reauth_settings.otp_wait_timeout_ms, timeout_ms)
 
 
 if __name__ == "__main__":
