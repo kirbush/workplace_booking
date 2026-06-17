@@ -574,6 +574,9 @@ If you must avoid firewall changes on both VPS hosts, an alternative working set
 3. point the bot to `TELEGRAM_PROXY_URL=http://127.0.0.1:43128`.
 
 This keeps the tunnel private, changes no default route, and isolates the workaround to Telegram traffic only.
+When `TELEGRAM_PROXY_URL` uses `127.0.0.1` or `localhost`, the GitHub Actions
+deploy sets `DOCKER_NETWORK_MODE=host` on the VPS so the Dockerized bot can reach
+the host-local SSH forward.
 
 ## 8) Security notes
 

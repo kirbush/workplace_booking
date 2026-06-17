@@ -117,11 +117,24 @@ jobs:
             exit 1
           fi
 
-          if grep -q '^EMAIL_FALLBACK_ENABLED=' .env; then
-            sed -i 's/^EMAIL_FALLBACK_ENABLED=.*/EMAIL_FALLBACK_ENABLED=false/' .env
-          else
-            printf '\nEMAIL_FALLBACK_ENABLED=false\n' >> .env
-          fi
+          set_env_var() {
+            key="$1"
+            value="$2"
+            if grep -q "^${key}=" .env; then
+              sed -i "s|^${key}=.*|${key}=${value}|" .env
+            else
+              printf '\n%s=%s\n' "$key" "$value" >> .env
+            fi
+          }
+
+          set_env_var EMAIL_FALLBACK_ENABLED false
+
+          telegram_proxy_url="$(grep '^TELEGRAM_PROXY_URL=' .env | tail -n 1 | cut -d= -f2- | tr -d \"'\\\"\")"
+          case "$telegram_proxy_url" in
+            http://127.0.0.1:*|https://127.0.0.1:*|http://localhost:*|https://localhost:*)
+              set_env_var DOCKER_NETWORK_MODE host
+              ;;
+          esac
 
           if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files --type=service --no-legend workplace-booking-bot.service | grep -q '^workplace-booking-bot\.service'; then
             if sudo -n systemctl restart workplace-booking-bot.service; then
