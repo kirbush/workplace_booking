@@ -469,6 +469,11 @@ The VPS still needs one-time bootstrapping:
 3. create `.env` on the VPS with runtime secrets and selectors;
 4. optionally install the systemd wrapper for service mode.
 
+Treat the VPS checkout as a managed deployment directory. The workflow resets it
+to the pushed GitHub commit and removes non-ignored untracked files before
+restart. Keep runtime secrets and state in ignored paths such as `.env` and
+`.state/`.
+
 If you prefer no internal scheduler/service loop, set `RUN_MODE=once` and trigger by OS scheduler:
 - cron (Linux),
 - Task Scheduler (Windows).

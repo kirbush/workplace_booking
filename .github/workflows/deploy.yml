@@ -106,8 +106,11 @@ jobs:
           cd "$DEPLOY_PATH"
           git remote set-url origin "$DEPLOY_REPO"
           git fetch --prune origin "$DEPLOY_REF"
+          git reset --hard
+          git clean -fd
           git checkout -B "$DEPLOY_REF" "origin/$DEPLOY_REF"
           git reset --hard "$DEPLOY_SHA"
+          git clean -fd
 
           if [ ! -f .env ]; then
             echo ".env must already exist on the VPS; refusing to deploy without runtime configuration." >&2
