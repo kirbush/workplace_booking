@@ -1,0 +1,142 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Deploy on VPS
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          VPS_PATH: ${{ secrets.VPS_PATH || '/opt/workplace_booking' }}
+          DEPLOY_REPO: ${{ github.server_url }}/${{ github.repository }}.git
+          DEPLOY_REF: ${{ github.ref_name }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ]; then
+            echo "VPS_HOST and VPS_USER secrets are required." >&2
+            exit 1
+          fi
+          if [ -z "$VPS_SSH_KEY" ] && [ -z "$VPS_PASSWORD" ]; then
+            echo "Set either VPS_SSH_KEY or VPS_PASSWORD secret." >&2
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          ssh-keyscan -p "$VPS_PORT" "$VPS_HOST" >> "$HOME/.ssh/known_hosts"
+
+          ssh_cmd=(ssh -p "$VPS_PORT" -o StrictHostKeyChecking=yes)
+          if [ -n "$VPS_SSH_KEY" ]; then
+            printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/deploy_key"
+            chmod 600 "$HOME/.ssh/deploy_key"
+            ssh_cmd+=( -i "$HOME/.ssh/deploy_key" -o IdentitiesOnly=yes )
+          else
+            sudo apt-get update
+            sudo apt-get install -y sshpass
+            export SSHPASS="$VPS_PASSWORD"
+            ssh_cmd=(sshpass -e "${ssh_cmd[@]}")
+          fi
+
+          remote_script="$(mktemp)"
+          cat > "$remote_script" <<'SCRIPT'
+          set -euo pipefail
+
+          if ! command -v git >/dev/null 2>&1; then
+            echo "git is required on the VPS." >&2
+            exit 1
+          fi
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker is required on the VPS." >&2
+            exit 1
+          fi
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose plugin is required on the VPS." >&2
+            exit 1
+          fi
+
+          if [ ! -d "$DEPLOY_PATH/.git" ]; then
+            if [ -e "$DEPLOY_PATH" ] && [ "$(find "$DEPLOY_PATH" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
+              echo "$DEPLOY_PATH exists but is not a git checkout." >&2
+              exit 1
+            fi
+            mkdir -p "$(dirname "$DEPLOY_PATH")"
+            git clone --branch "$DEPLOY_REF" "$DEPLOY_REPO" "$DEPLOY_PATH"
+          fi
+
+          cd "$DEPLOY_PATH"
+          git remote set-url origin "$DEPLOY_REPO"
+          git fetch --prune origin "$DEPLOY_REF"
+          git checkout -B "$DEPLOY_REF" "origin/$DEPLOY_REF"
+          git reset --hard "$DEPLOY_SHA"
+
+          if [ ! -f .env ]; then
+            echo ".env must already exist on the VPS; refusing to deploy without runtime configuration." >&2
+            exit 1
+          fi
+
+          if grep -q '^EMAIL_FALLBACK_ENABLED=' .env; then
+            sed -i 's/^EMAIL_FALLBACK_ENABLED=.*/EMAIL_FALLBACK_ENABLED=false/' .env
+          else
+            printf '\nEMAIL_FALLBACK_ENABLED=false\n' >> .env
+          fi
+
+          if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files --type=service --no-legend workplace-booking-bot.service | grep -q '^workplace-booking-bot\.service'; then
+            if sudo -n systemctl restart workplace-booking-bot.service; then
+              sudo -n systemctl --no-pager --full status workplace-booking-bot.service
+              exit 0
+            fi
+            echo "Could not restart workplace-booking-bot.service via passwordless sudo." >&2
+            echo "Allow this command for the deploy user or remove the systemd wrapper and use docker compose directly." >&2
+            exit 1
+          else
+            docker compose up -d --build --force-recreate workplace-booking
+            docker compose ps
+          fi
+          SCRIPT
+
+          quote() {
+            printf '%q' "$1"
+          }
+
+          remote_env="DEPLOY_PATH=$(quote "$VPS_PATH") DEPLOY_REPO=$(quote "$DEPLOY_REPO") DEPLOY_REF=$(quote "$DEPLOY_REF") DEPLOY_SHA=$(quote "$DEPLOY_SHA")"
+          "${ssh_cmd[@]}" "$VPS_USER@$VPS_HOST" "$remote_env bash -s" < "$remote_script"

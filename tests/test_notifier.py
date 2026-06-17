@@ -103,7 +103,7 @@ class FallbackNotifierTests(unittest.TestCase):
         self.assertIn("OTP code required", email.messages[0][0])
         self.assertIn("OTP code timeout", email.messages[1][0])
 
-    def test_repeated_poll_failures_trigger_transport_alert(self) -> None:
+    def test_repeated_poll_failures_do_not_trigger_email_transport_alert(self) -> None:
         primary = FakePrimaryNotifier()
         primary.poll_exception = RuntimeError("boom")
         email = FakeEmailNotifier()
@@ -118,8 +118,20 @@ class FallbackNotifierTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 notifier.poll_text_messages(timeout_sec=1)
 
+        self.assertEqual(email.messages, [])
+
+    def test_non_polling_transport_alert_is_sent_to_email(self) -> None:
+        primary = FakePrimaryNotifier()
+        email = FakeEmailNotifier()
+        notifier = FallbackNotifier(primary, email, email_fallback_enabled=True)
+
+        notifier.report_transport_issue(
+            "Telegram delivery failed",
+            "Telegram sendMessage failed after retries.",
+        )
+
         self.assertEqual(len(email.messages), 1)
-        self.assertIn("Telegram polling failed repeatedly", email.messages[0][0])
+        self.assertIn("Telegram delivery failed", email.messages[0][0])
 
     def test_disabled_primary_does_not_emit_transport_alert_for_normal_send(self) -> None:
         primary = FakePrimaryNotifier()

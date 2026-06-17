@@ -9,6 +9,7 @@ from typing import Protocol
 
 
 LOGGER = logging.getLogger(__name__)
+EMAIL_SUPPRESSED_TRANSPORT_ALERT_PREFIXES = ("Telegram polling failed",)
 
 
 class InteractiveNotifier(Protocol):
@@ -291,6 +292,9 @@ class FallbackNotifier:
         )
 
     def _send_transport_alert(self, subject: str, body: str) -> None:
+        if self._is_email_suppressed_transport_alert(subject):
+            LOGGER.warning("Suppressed email transport alert: %s\n%s", subject, body)
+            return
         if not self.email_fallback_enabled or self.email is None or not self.email.enabled:
             return
         self.email.send_message(
@@ -309,3 +313,7 @@ class FallbackNotifier:
     def _email_body(message: str) -> str:
         timestamp = datetime.now(timezone.utc).isoformat()
         return f"{message}\n\nUTC: {timestamp}\n"
+
+    @staticmethod
+    def _is_email_suppressed_transport_alert(subject: str) -> bool:
+        return subject.startswith(EMAIL_SUPPRESSED_TRANSPORT_ALERT_PREFIXES)

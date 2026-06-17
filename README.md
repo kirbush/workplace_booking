@@ -443,11 +443,31 @@ docker compose logs -f workplace-booking
 
 ## 7) VPS deployment (recommended for reliability)
 
-Use any Linux VPS:
+Production deployment is handled by GitHub Actions in `.github/workflows/deploy.yml`.
+
+The workflow runs on every push to `main` and can also be started manually from the
+GitHub Actions tab. It:
+1. checks out the exact pushed revision;
+2. installs Python dependencies and runs the test suite;
+3. connects to the VPS over SSH;
+4. updates the VPS checkout to the pushed commit;
+5. keeps `EMAIL_FALLBACK_ENABLED=false` in the VPS `.env`;
+6. restarts `workplace-booking-bot.service` when the systemd wrapper exists, otherwise runs `docker compose up -d --build --force-recreate workplace-booking`.
+
+Required GitHub repository secrets:
+- `VPS_HOST`
+- `VPS_USER`
+- one of `VPS_SSH_KEY` or `VPS_PASSWORD`
+
+Optional GitHub repository secrets:
+- `VPS_PORT` (defaults to `22`)
+- `VPS_PATH` (defaults to `/opt/workplace_booking`)
+
+The VPS still needs one-time bootstrapping:
 1. install Docker and Docker Compose plugin;
-2. clone repo, create `.env`, set selectors and Telegram;
-3. run `docker compose up -d --build`;
-4. container restarts automatically on reboot (`restart: unless-stopped`).
+2. create the deployment checkout path;
+3. create `.env` on the VPS with runtime secrets and selectors;
+4. optionally install the systemd wrapper for service mode.
 
 If you prefer no internal scheduler/service loop, set `RUN_MODE=once` and trigger by OS scheduler:
 - cron (Linux),
@@ -502,8 +522,7 @@ Set at least:
 Optional but recommended for RU deployments with Telegram instability:
 - `TELEGRAM_PROXY_ENABLED=true`
 - `TELEGRAM_PROXY_URL=http://<foreign_vps_wg_ip>:3128`
-- `EMAIL_FALLBACK_ENABLED=true`
-- SMTP settings for your mailbox
+- `EMAIL_FALLBACK_ENABLED=false`
 - `HEALTHCHECK_ENABLED=true`
 - `HEALTHCHECK_TIME_LOCAL=21:00`
 
@@ -526,6 +545,11 @@ sudo systemctl enable --now workplace-booking-bot.service
 sudo systemctl status workplace-booking-bot.service
 ```
 
+If this wrapper is installed, the GitHub Actions deploy user must be able to run
+`sudo systemctl restart workplace-booking-bot.service` without an interactive
+password prompt. If you do not want to grant that, skip the wrapper and let the
+workflow restart the container through `docker compose`.
+
 ### AmneziaWG + private proxy layout
 
 Recommended network layout when Telegram is unstable from your bot VPS:
@@ -546,17 +570,7 @@ If you must avoid firewall changes on both VPS hosts, an alternative working set
 
 This keeps the tunnel private, changes no default route, and isolates the workaround to Telegram traffic only.
 
-## 8) Free cloud deployment
-
-No GitHub Actions workflow is kept in this public repository.
-Reason:
-- public workflow runs keep historical metadata,
-- screenshots/artifacts are an unnecessary leak surface,
-- the VPS service mode is the primary production path for this project.
-
-If you want a free-tier scheduler later, use a separate private repository or a private GitHub Actions workflow with repository secrets, not this public repo.
-
-## 9) Security notes
+## 8) Security notes
 
 - Never commit `.env` with credentials.
 - Use a dedicated account with minimum required permissions if possible.
