@@ -129,7 +129,7 @@ jobs:
 
           set_env_var EMAIL_FALLBACK_ENABLED false
 
-          telegram_proxy_url="$(grep '^TELEGRAM_PROXY_URL=' .env | tail -n 1 | cut -d= -f2- | tr -d \"'\\\"\")"
+          telegram_proxy_url="$(grep '^TELEGRAM_PROXY_URL=' .env | tail -n 1 | cut -d= -f2-)"
           case "$telegram_proxy_url" in
             http://127.0.0.1:*|https://127.0.0.1:*|http://localhost:*|https://localhost:*)
               set_env_var DOCKER_NETWORK_MODE host
